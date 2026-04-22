@@ -22,11 +22,11 @@ $user_section = $_SESSION['section'] ?? 'N/A';
 
 // Filter Logic: Kung Admin, lahat makikita. Kung Staff, yung assigned lang.
 if ($current_role === 'Admin') {
-    $roleFilter = ""; // Walang filter para sa Admin
+    $roleFilter = ""; 
 } else {
-    // Staff filter - tinitignan kung tugma sa grade at section ng staff
     $roleFilter = " AND p.grade_level = '$user_grade' AND p.section = '$user_section'";
 }
+
 // Siguraduhin na ang database ay updated
 $conn->query("ALTER TABLE parents ADD COLUMN IF NOT EXISTS lrn VARCHAR(20) AFTER student_name");
 $conn->query("ALTER TABLE parents ADD COLUMN IF NOT EXISTS grade_level VARCHAR(20) AFTER lrn");
@@ -217,6 +217,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['edit_student'])) {
     $stmt->close();
 }
 
+/* --- STATS LOGIC (ACCURACY & COLOR FIX) --- */
 $roleFilter = ($current_role !== 'Admin') ? " AND p.grade_level = '$user_grade' AND p.section = '$user_section'" : "";
 
 function getCount($conn, $sql) {
@@ -224,11 +225,26 @@ function getCount($conn, $sql) {
     return ($result && $row = $result->fetch_assoc()) ? (int)$row['total'] : 0;
 }
 
-$totalStudentsToday = getCount($conn, "SELECT COUNT(DISTINCT a.student_name) as total FROM attendance a LEFT JOIN parents p ON a.student_name = p.student_name WHERE DATE(a.`time in`) = CURDATE() $roleFilter");
-$presentCount = getCount($conn, "SELECT COUNT(*) as total FROM attendance a LEFT JOIN parents p ON a.student_name = p.student_name WHERE a.present = 'Present' AND DATE(a.`time in`) = CURDATE() $roleFilter");
+// Kabuuang bilang ng lahat ng estudyante na hindi deleted
+$totalRegisteredStudents = getCount($conn, "SELECT COUNT(*) as total FROM parents p WHERE p.is_deleted = 0 $roleFilter");
+
+// Ngayon, bibilangin lang ang Present o Late (HINDI kasama ang Absent sa "Total Present Today")
+$totalPresentToday = getCount($conn, "SELECT COUNT(DISTINCT a.student_name) as total FROM attendance a LEFT JOIN parents p ON a.student_name = p.student_name WHERE DATE(a.`time in`) = CURDATE() AND (a.present = 'Present' OR a.late = 'Late') $roleFilter");
+
+$presentOnlyCount = getCount($conn, "SELECT COUNT(*) as total FROM attendance a LEFT JOIN parents p ON a.student_name = p.student_name WHERE a.present = 'Present' AND DATE(a.`time in`) = CURDATE() $roleFilter");
 $lateCount = getCount($conn, "SELECT COUNT(*) as total FROM attendance a LEFT JOIN parents p ON a.student_name = p.student_name WHERE a.late = 'Late' AND DATE(a.`time in`) = CURDATE() $roleFilter");
-$absentCount = getCount($conn, "SELECT COUNT(*) as total FROM attendance a LEFT JOIN parents p ON a.student_name = p.student_name WHERE a.absent = 'Absent' AND DATE(a.`time in`) = CURDATE() $roleFilter");
-$overallRate = ($totalStudentsToday > 0) ? round(($presentCount / $totalStudentsToday) * 100, 1) : 0;
+$absentCount = getCount($conn, "SELECT COUNT(*) as total FROM attendance a LEFT JOIN parents p ON a.student_name = p.student_name WHERE a.present = 'Absent' AND DATE(a.`time in`) = CURDATE() $roleFilter");
+
+// Accurate Attendance Rate: (Present + Late) / Total Registered Students
+$overallRate = ($totalRegisteredStudents > 0) ? round(($totalPresentToday / $totalRegisteredStudents) * 100, 1) : 0;
+
+// Logic para sa kulay ng rate circle
+$rateColor = "#ef4444"; // Default: Red
+if ($overallRate >= 85) {
+    $rateColor = "#10b981"; // Green (Mataas)
+} elseif ($overallRate >= 60) {
+    $rateColor = "#f59e0b"; // Yellow/Orange (Moderate)
+}
 
 $showSuccessAlert = isset($_SESSION['action_success']);
 $alertText = $showSuccessAlert ? $_SESSION['action_success'] : "";
@@ -253,13 +269,38 @@ if ($showSuccessAlert) unset($_SESSION['action_success']);
         .report-form-box { flex: 1; background: #f9fafb; padding: 25px; border-radius: 12px; border: 1px solid #e5e7eb; }
         .report-form-box label { display: block; margin-bottom: 8px; font-weight: 600; font-size: 13px; }
         .report-form-box select, .report-form-box input { width: 100%; padding: 10px; margin-bottom: 15px; border: 1px solid #ddd; border-radius: 8px; }
-        
-        /* New User Card Design for Settings */
         .user-card { background: #fff; border: 1px solid #edf2f7; padding: 15px; border-radius: 12px; display: flex; align-items: center; gap: 15px; margin-bottom: 10px; }
         .user-avatar { width: 45px; height: 45px; background: #e0e7ff; color: #4338ca; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 20px; }
         .user-info h4 { margin: 0; font-size: 15px; color: #1e293b; }
         .user-info p { margin: 0; font-size: 12px; color: #64748b; }
         .role-badge { font-size: 10px; padding: 2px 8px; border-radius: 20px; background: #f1f5f9; color: #475569; font-weight: 600; text-transform: uppercase; }
+        
+        /* Progress Circle Color Fix */
+        .big-progress {
+            width: 150px;
+            height: 150px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 20px auto;
+            position: relative;
+            background: radial-gradient(closest-side, white 82%, transparent 0 100%), 
+                        conic-gradient(<?php echo $rateColor; ?> <?php echo $overallRate; ?>%, #e2e8f0 0);
+            font-size: 28px;
+            font-weight: 700;
+            color: #1e293b;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.05);
+        }
+        .big-progress::after {
+            content: "";
+            position: absolute;
+            width: 82%;
+            height: 82%;
+            background: white;
+            border-radius: 50%;
+            z-index: -1;
+        }
     </style>
 </head>
 <body class="dashboard-page">
@@ -318,19 +359,19 @@ if ($showSuccessAlert) unset($_SESSION['action_success']);
             <div class="stats-grid">
                 <div class="stat-card">
                     <div class="stat-head"><div class="stat-title">Total Present Today</div><div class="stat-mini-icon"><i class="fa-solid fa-users"></i></div></div>
-                    <div class="stat-body"><div class="stat-icon-large"><i class="fa-solid fa-user-group"></i></div><div class="stat-value"><?php echo $totalStudentsToday; ?></div></div>
+                    <div class="stat-body"><div class="stat-icon-large"><i class="fa-solid fa-user-group"></i></div><div class="stat-value"><?php echo $totalPresentToday; ?></div></div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-head"><div class="stat-title">Late</div><div class="stat-mini-icon"><i class="fa-solid fa-clock"></i></div></div>
                     <div class="stat-body">
-                        <div class="ring" style="--value: <?php echo ($totalStudentsToday > 0 ? round(($lateCount / $totalStudentsToday) * 100) : 0); ?>%"><i class="fa-solid fa-clock"></i></div>
+                        <div class="ring" style="--value: <?php echo ($totalPresentToday > 0 ? round(($lateCount / $totalPresentToday) * 100) : 0); ?>%; color: #f59e0b;"><i class="fa-solid fa-clock"></i></div>
                         <div class="stat-value"><?php echo $lateCount; ?></div>
                     </div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-head"><div class="stat-title">Absent</div><div class="stat-mini-icon"><i class="fa-solid fa-user-xmark"></i></div></div>
                     <div class="stat-body">
-                        <div class="ring" style="--value: <?php echo ($totalStudentsToday > 0 ? round(($absentCount) * 100) : 0); ?>%"><i class="fa-solid fa-user-xmark"></i></div>
+                        <div class="ring" style="--value: <?php echo ($totalRegisteredStudents > 0 ? round(($absentCount / $totalRegisteredStudents) * 100) : 0); ?>%; color: #ef4444;"><i class="fa-solid fa-user-xmark"></i></div>
                         <div class="stat-value"><?php echo $absentCount; ?></div>
                     </div>
                 </div>
@@ -340,7 +381,9 @@ if ($showSuccessAlert) unset($_SESSION['action_success']);
                 <div class="box progress-panel">
                     <div class="box-title">Attendance Rate Today</div>
                     <div class="big-progress"><span><?php echo $overallRate; ?>%</span></div>
-                    <p><?php echo $presentCount; ?> of <?php echo $totalStudentsToday; ?></p>
+                    <p style="text-align: center; color: #64748b; margin-top: 10px;">
+                        <strong><?php echo $totalPresentToday; ?></strong> of <strong><?php echo $totalRegisteredStudents; ?></strong> Students
+                    </p>
                 </div>
             </div>
         </div>
@@ -489,25 +532,16 @@ if ($showSuccessAlert) unset($_SESSION['action_success']);
                             <?php
                            $logRes = $conn->query("SELECT * FROM activity_logs ORDER BY timestamp DESC LIMIT 50");
                            while ($log = $logRes->fetch_assoc()) {
-                           $restore_btn = "";
-                           if (strpos($log['action'], 'Archived') !== false) {
-                           $json_part = str_replace(['Deleted Data Backup: ', 'Archived Data Backup: '], '', $log['details']);
-                              $details = json_decode($json_part, true);
-                                if ($details && isset($details['id'])) {
-                                  $restore_btn = "<a href='?restore_id=".$details['id']."class='badge-section' 
-                               style='background:#10b981; color:white; text-decoration:none; padding: 5px 12px; border-radius: 6px; display: inline-flex; align-items: center; gap: 5px; font-size: 12px;'>
-                               <i class='fa-solid fa-rotate-left'></i> Restore
-                            </a>";
-        }
-    }
-    echo "<tr>
-            <td>{$log['timestamp']}</td>
-            <td><span class='badge-section' style='background:#e2e8f0; padding:3px 8px; border-radius:5px;'>{$log['action']}</span></td>
-            <td style='font-size:11px;'>".htmlspecialchars($log['details'])."</td>
-            <td>$restore_btn</td>
-        </tr>";
-}
-                            
+                               $restore_btn = "";
+                               if (strpos($log['action'], 'Archived') !== false) {
+                                   $json_part = str_replace(['Deleted Data Backup: ', 'Archived Data Backup: '], '', $log['details']);
+                                   $details = json_decode($json_part, true);
+                                   if ($details && isset($details['id'])) {
+                                       $restore_btn = "<a href='?restore_id=".$details['id']."' class='badge-section' style='background:#10b981; color:white; text-decoration:none; padding: 5px 12px; border-radius: 6px; display: inline-flex; align-items: center; gap: 5px; font-size: 12px;'><i class='fa-solid fa-rotate-left'></i> Restore</a>";
+                                   }
+                               }
+                               echo "<tr><td>{$log['timestamp']}</td><td><span class='badge-section' style='background:#e2e8f0; padding:3px 8px; border-radius:5px;'>{$log['action']}</span></td><td style='font-size:11px;'>".htmlspecialchars($log['details'])."</td><td>$restore_btn</td></tr>";
+                           }
                             ?>
                         </tbody>
                     </table>
@@ -578,7 +612,6 @@ if ($showSuccessAlert) unset($_SESSION['action_success']);
         if(e) e.currentTarget.classList.add('active');
     }
 
-    // Tab retention on reload
     const urlParams = new URLSearchParams(window.location.search);
     const section = urlParams.get('section');
     if(section) {
@@ -677,7 +710,7 @@ if ($showSuccessAlert) unset($_SESSION['action_success']);
             labels: ['Present', 'Late', 'Absent'],
             datasets: [{
                 label: 'Today\'s Attendance',
-                data: [<?php echo $presentCount; ?>, <?php echo $lateCount; ?>, <?php echo $absentCount; ?>],
+                data: [<?php echo $presentOnlyCount; ?>, <?php echo $lateCount; ?>, <?php echo $absentCount; ?>],
                 backgroundColor: ['#10b981', '#f59e0b', '#ef4444'],
                 borderRadius: 8
             }]
@@ -687,7 +720,7 @@ if ($showSuccessAlert) unset($_SESSION['action_success']);
             scales: { y: { beginAtZero: true, grid: { display: false } }, x: { grid: { display: false } } }
         }
     });
-    // Watchdog for RFID Taps
+
 let hulingID = null;
 function monitorTap() {
     fetch('update.php?cache_bust=' + Date.now())
